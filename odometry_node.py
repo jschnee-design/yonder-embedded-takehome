@@ -183,6 +183,18 @@ class OdometryNode(Node):
         delta_ticks = msg.tick_count - self.last_tick_count
         delta_time = msg.timestamp - self.last_tick_time
 
+        # 3. Guard against duplicate messages and non-positive time intervals
+        # A duplicate message has identical timestamp or tick count received in ~0s
+        if delta_time <= 1e-5:
+            # Drop duplicate / zero-duration packet to prevent ZeroDivisionError or NaN
+            #print(f"[REJECTED DUP] delta_t={delta_time:.6f}s delta_ticks={delta_ticks}")
+            return
+
+        if delta_ticks < 0:
+            # Ticks are strictly monotonic; ignore out-of-order anomalies
+            #print(f"[REJECTED REVERSAL] delta_ticks={delta_ticks}")
+            return
+        
         self.last_tick_count = msg.tick_count
         self.last_tick_time = msg.timestamp
 
@@ -190,6 +202,9 @@ class OdometryNode(Node):
         distance = delta_ticks * DIST_PER_TICK
         if delta_time > 0:
             self.linear_velocity = distance / delta_time
+
+        #if self.wheel_msg_count % 50 == 0:
+        #    print(f"[OK] v={self.linear_velocity:.3f} m/s | dt={delta_time:.4f}s | ticks={delta_ticks}")
 
         # 5. Update self.x and self.y: rover starts facing East (heading = 0.0 rad)
         self.x += distance * math.cos(self.heading)
