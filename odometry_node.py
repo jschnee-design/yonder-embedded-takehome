@@ -132,7 +132,17 @@ class OdometryNode(Node):
         self.y: float = 0.0                  # fused position, metres (north)
         self.heading: float = 0.0            # radians. The rover starts facing EAST (0 rad);
                                              # x is east, y is north, counter-clockwise is positive
-        
+        # Stretch Goal C
+        self.enc_x: float = 0.0
+        self.enc_y: float = 0.0
+        self.enc_heading: float = 0.0
+
+        self.map_to_odom_x: float = 0.0
+        self.map_to_odom_y: float = 0.0
+        self.map_to_odom_yaw: float = 0.0
+
+        #----
+
         self.linear_velocity: float = 0.0
         self.last_tick_count: int | None = None
         self.last_tick_time: float | None = None
@@ -235,6 +245,11 @@ class OdometryNode(Node):
         self.x += distance * math.cos(self.heading)
         self.y += distance * math.sin(self.heading)
 
+        self.enc_heading += distance / PATH_RADIUS_M
+        self.enc_heading = (self.enc_heading + math.pi) % (2.0 * math.pi) - math.pi
+        self.enc_x += distance * math.cos(self.enc_heading)
+        self.enc_y += distance * math.sin(self.enc_heading)
+
         # 7. Call self.publish_odometry()
         self.publish_odometry(stamp=msg.timestamp)
 
@@ -290,6 +305,18 @@ class OdometryNode(Node):
         self.x = (1.0 - w_gps) * self.x + w_gps * msg.x
         self.y = (1.0 - w_gps) * self.y + w_gps * msg.y
 
+        # Stretch Goal C:
+        self.map_to_odom_yaw = (self.heading - self.enc_heading + math.pi) % (2.0 * math.pi) - math.pi
+        c_yaw = math.cos(self.map_to_odom_yaw)
+        s_yaw = math.sin(self.map_to_odom_yaw)
+        
+        rot_x = self.enc_x * c_yaw - self.enc_y * s_yaw
+        rot_y = self.enc_x * s_yaw + self.enc_y * c_yaw
+        self.map_to_odom_x = self.x - rot_x
+        self.map_to_odom_y = self.y - rot_y
+
+        self.broadcast_map_to_odom(msg.timestamp)
+        
         # 3. Update self.last_gps_time = msg.timestamp
         self.last_gps_time = msg.timestamp
 
@@ -341,18 +368,23 @@ class OdometryNode(Node):
 
         self.odom_pub.publish(msg)
 
-        # Stretch Goal A:
+        # Stretch Goal A/C:
         t = TransformStamped()
         t.header.stamp = msg.header.stamp
         t.header.frame_id = "odom"          # Parent frame
         t.child_frame_id = "base_link"      # Child frame
 
-        t.transform.translation.x = self.x
-        t.transform.translation.y = self.y
+        t.transform.translation.x = self.enc_x
+        t.transform.translation.y = self.enc_y
         t.transform.translation.z = 0.0
 
-        t.transform.rotation = msg.pose.pose.orientation
-
+        t.transform.rotation = Quaternion(
+            x=0.0,
+            y=0.0,
+            z=math.sin(self.enc_heading / 2.0),
+            w=math.cos(self.enc_heading / 2.0),
+        )
+        
         self.tf_broadcaster.sendTransform(t)
         
 
@@ -398,12 +430,57 @@ class OdometryNode(Node):
         transforms = tf2_ros.get_latest_transforms()
         tf_status = f"tf_active({transforms[0].child_frame_id})" if transforms else "tf_none"
 
+        # Verify Stretch Goal C:
+        map_pose = self.lookup_transform("map", "base_link")
+        map_str = f"map=({map_pose[0]:.2f}, {map_pose[1]:.2f})" if map_pose else "map=pending"
+
         print(
             f"[odom] pos=({self.x:5.2f}, {self.y:5.2f})m | "
             f"enc={dt_wheel:5.3f}s ago @ {measured_hz:4.1f}Hz (exp ~50Hz) | "
-            f"gps={gps_status} | {tf_status}"
+            f"gps={gps_status} | {map_str}"
         )
 
+    def broadcast_map_to_odom(self, stamp: float) -> None:
+        t_map = TransformStamped()
+        t_map.header.stamp = stamp
+        t_map.header.frame_id = "map"
+        t_map.child_frame_id = "odom"
+
+        t_map.transform.translation.x = self.map_to_odom_x
+        t_map.transform.translation.y = self.map_to_odom_y
+        t_map.transform.translation.z = 0.0
+
+        t_map.transform.rotation = Quaternion(
+            x=0.0,
+            y=0.0,
+            z=math.sin(self.map_to_odom_yaw / 2.0),
+            w=math.cos(self.map_to_odom_yaw / 2.0),
+        )
+        self.tf_broadcaster.sendTransform(t_map)
+
+    def lookup_transform(self, target_frame: str, source_frame: str):
+        import tf2_ros
+        transforms = {t.child_frame_id: t for t in tf2_ros.get_latest_transforms()}
+
+        if target_frame == "map" and source_frame == "base_link":
+            if "odom" not in transforms or "base_link" not in transforms:
+                return None
+            t_m2o = transforms["odom"]
+            t_o2b = transforms["base_link"]
+
+            # yaw = 2 * atan2(z, w)
+            yaw_m2o = 2.0 * math.atan2(t_m2o.transform.rotation.z, t_m2o.transform.rotation.w)
+            yaw_o2b = 2.0 * math.atan2(t_o2b.transform.rotation.z, t_o2b.transform.rotation.w)
+
+            yaw_composed = (yaw_m2o + yaw_o2b + math.pi) % (2.0 * math.pi) - math.pi
+
+            x_b = t_o2b.transform.translation.x
+            y_b = t_o2b.transform.translation.y
+            x_composed = t_m2o.transform.translation.x + (x_b * math.cos(yaw_m2o) - y_b * math.sin(yaw_m2o))
+            y_composed = t_m2o.transform.translation.y + (x_b * math.sin(yaw_m2o) + y_b * math.cos(yaw_m2o))
+
+            return x_composed, y_composed, yaw_composed
+        return None
 
 # ---------------------------------------------------------------------------
 # Entry point
