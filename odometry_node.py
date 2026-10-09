@@ -93,6 +93,10 @@ class OdometryNode(Node):
         #     WheelTicks, "/wheel_ticks", self.wheel_tick_callback, ???
         # )
 
+        self.gps_sub = self.create_subscription(
+            GPSEstimate, "/gps_estimate", self.gps_callback, wheel_qos
+        )
+
         # TODO: Create a subscriber for /gps_estimate (same QoS considerations).
         #
         # self.gps_sub = self.create_subscription(
@@ -125,9 +129,13 @@ class OdometryNode(Node):
         self.last_tick_count: int | None = None
         self.last_tick_time: float | None = None
 
-        self.last_gps_time: float | None = None
         self.last_wheel_time: float | None = None
+        self.last_gps_time: float | None = None
+        self.last_gps_arrival: float | None = None
 
+        self.prev_gps_x: float | None = None
+        self.prev_gps_y: float | None = None
+        
         self.wheel_msg_count: int = 0
         self.start_time: float = time.monotonic()   # use time.monotonic() to measure durations
 
@@ -238,14 +246,34 @@ class OdometryNode(Node):
             How do you weight them? Should the weighting change over time?
             (That's Stretch Goal B — but even a fixed weighting is fine here.)
         """
-        # TODO: implement
-        #
-        # Suggested approach:
-        #   1. Compute a weight w_gps based on msg.covariance (lower cov = higher trust).
-        #   2. Blend: self.x = (1 - w_gps) * self.x + w_gps * msg.x
-        #             self.y = (1 - w_gps) * self.y + w_gps * msg.y
-        #   3. Update self.last_gps_time = msg.timestamp
-        pass
+
+        # Record arrival using monotonic clock for timeout/monitoring checks
+        self.last_wheel_gps_arrival = time.monotonic()
+
+        if self.prev_gps_x is not None and self.prev_gps_y is not None:
+            dx = msg.x - self.prev_gps_x
+            dy = msg.y - self.prev_gps_y
+            disp = math.hypot(dx, dy)
+
+            if disp > 0.25:
+                gps_heading = math.atan2(dy, dx)
+                diff = (gps_heading - self.heading + math.pi) % (2.0 * math.pi) - math.pi
+                heading_gain = 0.25 if msg.covariance < 0.2 else 0.08
+                self.heading = (self.heading + heading_gain * diff + math.pi) % (2.0 * math.pi) - math.pi
+
+        self.prev_gps_x = msg.x
+        self.prev_gps_y = msg.y
+
+        # 1. Compute a weight w_gps based on msg.covariance (lower cov = higher trust).
+        w_gps = min(max(0.03 / msg.covariance, 0.05), 0.35)
+
+        # 2. Blend: self.x = (1 - w_gps) * self.x + w_gps * msg.x
+        #           self.y = (1 - w_gps) * self.y + w_gps * msg.y
+        self.x = (1.0 - w_gps) * self.x + w_gps * msg.x
+        self.y = (1.0 - w_gps) * self.y + w_gps * msg.y
+
+        # 3. Update self.last_gps_time = msg.timestamp
+        self.last_gps_time = msg.timestamp
 
     # -----------------------------------------------------------------------
     # Odometry publisher
