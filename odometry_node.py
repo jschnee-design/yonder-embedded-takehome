@@ -41,7 +41,7 @@ from sim.messages import WheelTicks, GPSEstimate
 
 # Standard ROS message types (mirrored by the shim)
 from nav_msgs.msg import Odometry
-from geometry_msgs.msg import Quaternion
+from geometry_msgs.msg import Quaternion, Point, Vector3
 
 # --------------------------------------------------------------------------
 # Constants  (do not change — these match the real rover's encoder setup)
@@ -104,7 +104,7 @@ class OdometryNode(Node):
         # ------------------------------------------------------------------
         # TODO: Create a publisher for /odom.
         #
-        # self.odom_pub = self.create_publisher(Odometry, "/odom", 10)
+        self.odom_pub = self.create_publisher(Odometry, "/odom", 10)
 
         # ------------------------------------------------------------------
         # Timer — 1 Hz monitoring output
@@ -120,7 +120,8 @@ class OdometryNode(Node):
         self.y: float = 0.0                  # fused position, metres (north)
         self.heading: float = 0.0            # radians. The rover starts facing EAST (0 rad);
                                              # x is east, y is north, counter-clockwise is positive
-
+        
+        self.linear_velocity: float = 0.0
         self.last_tick_count: int | None = None
         self.last_tick_time: float | None = None
 
@@ -170,21 +171,32 @@ class OdometryNode(Node):
 
         self.last_wheel_time = time.monotonic()
         self.wheel_msg_count += 1
-        print(f"[wheel_ticks] count={msg.tick_count} stamp={msg.timestamp:.3f}")
+        #print(f"[wheel_ticks] count={msg.tick_count} stamp={msg.timestamp:.3f}")
 
-        # TODO: implement
-        #
-        # Suggested approach:
-        #   1. Handle first message (initialise last_tick_count / last_tick_time).
-        #   2. Compute delta_ticks = msg.tick_count - self.last_tick_count
-        #   3. Guard against duplicate (delta_ticks == 0 and delta_time ≈ 0).
-        #   4. Convert ticks to distance: distance = delta_ticks * DIST_PER_TICK
-        #   5. Update self.x and self.y: the rover moves `distance` in the direction
-        #      it is FACING. Ticks tell you how far, not which way. Where does your
-        #      heading come from and how does it change? See "Heading is not
-        #      measured" in the README before you write this line.
-        #   6. Call self.publish_odometry().
-        pass
+        # 1. Handle first message (initialise last_tick_count / last_tick_time)
+        if self.last_tick_count is None or self.last_tick_time is None:
+            self.last_tick_count = msg.tick_count
+            self.last_tick_time = msg.timestamp
+            return
+
+        # 2. Compute delta_ticks and delta_time
+        delta_ticks = msg.tick_count - self.last_tick_count
+        delta_time = msg.timestamp - self.last_tick_time
+
+        self.last_tick_count = msg.tick_count
+        self.last_tick_time = msg.timestamp
+
+        # 4. Convert ticks to distance: distance = delta_ticks * DIST_PER_TICK
+        distance = delta_ticks * DIST_PER_TICK
+        if delta_time > 0:
+            self.linear_velocity = distance / delta_time
+
+        # 5. Update self.x and self.y: rover starts facing East (heading = 0.0 rad)
+        self.x += distance * math.cos(self.heading)
+        self.y += distance * math.sin(self.heading)
+
+        # 6. Call self.publish_odometry()
+        self.publish_odometry(stamp=msg.timestamp)
 
     # -----------------------------------------------------------------------
     # GPS callback
@@ -224,7 +236,7 @@ class OdometryNode(Node):
     # Odometry publisher
     # -----------------------------------------------------------------------
 
-    def publish_odometry(self) -> None:
+    def publish_odometry(self, stamp: float | None = None) -> None:
         """
         Build a nav_msgs/Odometry message from the current state and publish it.
 
@@ -245,8 +257,29 @@ class OdometryNode(Node):
         Look up the real nav_msgs/Odometry definition for the full field list.
         Not every field is required — position is the minimum.
         """
-        # TODO: implement
-        pass
+
+
+        msg = Odometry()
+        msg.header.stamp = stamp if stamp is not None else time.time()
+        msg.header.frame_id = "odom"
+        msg.child_frame_id = "base_link"
+
+        msg.pose.pose.position.x = self.x
+        msg.pose.pose.position.y = self.y
+        msg.pose.pose.position.z = 0.0
+
+        msg.pose.pose.orientation = Quaternion(
+            x=0.0,
+            y=0.0,
+            z=math.sin(self.heading / 2.0),
+            w=math.cos(self.heading / 2.0),
+        )
+
+        msg.twist.twist.linear.x = self.linear_velocity
+        msg.twist.twist.angular.z = 0.0
+
+        self.odom_pub.publish(msg)
+        
 
     # -----------------------------------------------------------------------
     # Monitoring callback  (1 Hz)
