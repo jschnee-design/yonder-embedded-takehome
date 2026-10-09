@@ -69,6 +69,16 @@ class OdometryNode(Node):
         # ------------------------------------------------------------------
         # Subscribers
         # ------------------------------------------------------------------
+        wheel_qos = QoSProfile(
+            reliability=ReliabilityPolicy.BEST_EFFORT,
+            durability=DurabilityPolicy.VOLATILE,
+            depth=10,
+        )
+        
+        self.tick_sub = self.create_subscription(
+            WheelTicks, "/wheel_ticks", self.wheel_tick_callback, wheel_qos
+        )
+
         # TODO: Create a subscriber for /wheel_ticks.
         #
         # IMPORTANT: Check what QoS the encoder publisher uses (see
@@ -157,6 +167,11 @@ class OdometryNode(Node):
         Useful constants:
             DIST_PER_TICK   metres per encoder tick (~0.00131 m)
         """
+
+        self.last_wheel_time = time.monotonic()
+        self.wheel_msg_count += 1
+        print(f"[wheel_ticks] count={msg.tick_count} stamp={msg.timestamp:.3f}")
+
         # TODO: implement
         #
         # Suggested approach:
