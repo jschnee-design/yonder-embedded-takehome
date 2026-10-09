@@ -51,7 +51,8 @@ TICKS_PER_REVOLUTION = 360
 DIST_PER_TICK = (2.0 * math.pi * WHEEL_RADIUS_M) / TICKS_PER_REVOLUTION  # ~0.00131 m
 
 # Radius of curvature for ground-truth path (metres)
-PATH_RADIUS_M = 10.0
+# Tweaking for accuracy - blue line staying outside so reducing
+PATH_RADIUS_M = 9.8
 
 
 class OdometryNode(Node):
@@ -265,7 +266,7 @@ class OdometryNode(Node):
             if disp > 0.3:
                 gps_heading = math.atan2(dy, dx)
                 diff = (gps_heading - self.heading + math.pi) % (2.0 * math.pi) - math.pi
-                self.heading = (self.heading + 0.05 * diff + math.pi) % (2.0 * math.pi) - math.pi
+                self.heading = (self.heading + 0.03 * diff + math.pi) % (2.0 * math.pi) - math.pi
 
         self.prev_gps_x = msg.x
         self.prev_gps_y = msg.y
