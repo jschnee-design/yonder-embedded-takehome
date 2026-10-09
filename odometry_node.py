@@ -280,8 +280,10 @@ class OdometryNode(Node):
         self.prev_gps_y = msg.y
 
         # 1. Compute a weight w_gps based on msg.covariance (lower cov = higher trust).
+        dt_gps = (msg.timestamp - self.last_gps_time) if self.last_gps_time is not None else 1.0
+        drift_factor = min(max(dt_gps, 1.0), 6.0)
         # cov ~ 0.09 -> w ~ 0.12
-        w_gps = min(max(0.012 / msg.covariance, 0.03), 0.15)
+        w_gps = min(max((0.012 / msg.covariance) * math.sqrt(drift_factor), 0.03), 0.25)
 
         # 2. Blend: self.x = (1 - w_gps) * self.x + w_gps * msg.x
         #           self.y = (1 - w_gps) * self.y + w_gps * msg.y
