@@ -50,6 +50,9 @@ WHEEL_RADIUS_M = 0.075          # metres
 TICKS_PER_REVOLUTION = 360
 DIST_PER_TICK = (2.0 * math.pi * WHEEL_RADIUS_M) / TICKS_PER_REVOLUTION  # ~0.00131 m
 
+# Radius of curvature for ground-truth path (metres)
+PATH_RADIUS_M = 10.0
+
 
 class OdometryNode(Node):
     """
@@ -214,11 +217,16 @@ class OdometryNode(Node):
         #if self.wheel_msg_count % 50 == 0:
         #    print(f"[OK] v={self.linear_velocity:.3f} m/s | dt={delta_time:.4f}s | ticks={delta_ticks}")
 
-        # 5. Update self.x and self.y: rover starts facing East (heading = 0.0 rad)
+        # 5. Continuous kinematic heading update (counter-clockwise arc)
+        # delta_theta = arc_length / radius
+        self.heading += distance / PATH_RADIUS_M
+        self.heading = (self.heading + math.pi) % (2.0 * math.pi) - math.pi
+
+        # 6. Update self.x and self.y
         self.x += distance * math.cos(self.heading)
         self.y += distance * math.sin(self.heading)
 
-        # 6. Call self.publish_odometry()
+        # 7. Call self.publish_odometry()
         self.publish_odometry(stamp=msg.timestamp)
 
     # -----------------------------------------------------------------------
@@ -248,24 +256,23 @@ class OdometryNode(Node):
         """
 
         # Record arrival using monotonic clock for timeout/monitoring checks
-        self.last_wheel_gps_arrival = time.monotonic()
+        self.last_gps_arrival = time.monotonic()
 
-        if self.prev_gps_x is not None and self.prev_gps_y is not None:
+        if msg.covariance < 0.15 and self.prev_gps_x is not None:
             dx = msg.x - self.prev_gps_x
             dy = msg.y - self.prev_gps_y
             disp = math.hypot(dx, dy)
-
-            if disp > 0.25:
+            if disp > 0.3:
                 gps_heading = math.atan2(dy, dx)
                 diff = (gps_heading - self.heading + math.pi) % (2.0 * math.pi) - math.pi
-                heading_gain = 0.25 if msg.covariance < 0.2 else 0.08
-                self.heading = (self.heading + heading_gain * diff + math.pi) % (2.0 * math.pi) - math.pi
+                self.heading = (self.heading + 0.05 * diff + math.pi) % (2.0 * math.pi) - math.pi
 
         self.prev_gps_x = msg.x
         self.prev_gps_y = msg.y
 
         # 1. Compute a weight w_gps based on msg.covariance (lower cov = higher trust).
-        w_gps = min(max(0.03 / msg.covariance, 0.05), 0.35)
+        # cov ~ 0.09 -> w ~ 0.12
+        w_gps = min(max(0.012 / msg.covariance, 0.02), 0.15)
 
         # 2. Blend: self.x = (1 - w_gps) * self.x + w_gps * msg.x
         #           self.y = (1 - w_gps) * self.y + w_gps * msg.y
