@@ -40,8 +40,10 @@ from rclpy_lite.qos import QoSProfile, ReliabilityPolicy, DurabilityPolicy
 from sim.messages import WheelTicks, GPSEstimate
 
 # Standard ROS message types (mirrored by the shim)
+# Also imports for stretch A
 from nav_msgs.msg import Odometry
-from geometry_msgs.msg import Quaternion, Point, Vector3
+from geometry_msgs.msg import Quaternion, Point, Vector3, TransformStamped
+from tf2_ros import TransformBroadcaster
 
 # --------------------------------------------------------------------------
 # Constants  (do not change — these match the real rover's encoder setup)
@@ -113,6 +115,8 @@ class OdometryNode(Node):
         # TODO: Create a publisher for /odom.
         #
         self.odom_pub = self.create_publisher(Odometry, "/odom", 10)
+        # Stretch Goal A: TF2 Broadcaster
+        self.tf_broadcaster = TransformBroadcaster(self)
 
         # ------------------------------------------------------------------
         # Timer — 1 Hz monitoring output
@@ -334,6 +338,20 @@ class OdometryNode(Node):
         msg.twist.twist.angular.z = 0.0
 
         self.odom_pub.publish(msg)
+
+        # Stretch Goal A:
+        t = TransformStamped()
+        t.header.stamp = msg.header.stamp
+        t.header.frame_id = "odom"          # Parent frame
+        t.child_frame_id = "base_link"      # Child frame
+
+        t.transform.translation.x = self.x
+        t.transform.translation.y = self.y
+        t.transform.translation.z = 0.0
+
+        t.transform.rotation = msg.pose.pose.orientation
+
+        self.tf_broadcaster.sendTransform(t)
         
 
     # -----------------------------------------------------------------------
@@ -373,10 +391,15 @@ class OdometryNode(Node):
         # Add outage flag if GPS drops out (> 3.0s)
         gps_status = f"{dt_gps:4.2f}s ago" if dt_gps < 3.0 else f"{dt_gps:4.2f}s ago [OUTAGE]"
 
+        # verification for Stretch Goal A:
+        import tf2_ros
+        transforms = tf2_ros.get_latest_transforms()
+        tf_status = f"tf_active({transforms[0].child_frame_id})" if transforms else "tf_none"
+
         print(
             f"[odom] pos=({self.x:5.2f}, {self.y:5.2f})m | "
             f"enc={dt_wheel:5.3f}s ago @ {measured_hz:4.1f}Hz (exp ~50Hz) | "
-            f"gps={gps_status}"
+            f"gps={gps_status} | {tf_status}"
         )
 
 
