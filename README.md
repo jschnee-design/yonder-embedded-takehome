@@ -393,15 +393,25 @@ We don't expect a perfect implementation. Those who show genuine effort and lear
 
 ## Your write-up
 
-*Candidates: replace this section with your own short write-up. Keep it to what a teammate would need to trust your implementation.*
+### Fusion approach
+Position fusion combines high-frequency wheel dead-reckoning with low-frequency absolute GPS updates using a dynamic confidence-weighted complementary filter:
+- **Weighting formulation:** The GPS update weight is computed dynamically as:
+  $$w_{\text{gps}} = \text{clamp}\left(\frac{0.012}{\text{covariance}} \times \sqrt{\text{drift\_factor}},\, 0.03,\, 0.25\right)$$
+- **Signal quality & covariance:** The weight scales inversely with `msg.covariance`. A typical clean reading ($\approx 0.09\text{ m}^2$) yields a base weight around $0.13$, whereas noisy fixes receive down to the minimum clamp ($0.03$).
+- **Drift scaling over time (Stretch Goal B):** The time elapsed since the last GPS update ($\Delta t_{\text{gps}}$) sets $\text{drift\_factor} = \text{clamp}(\Delta t_{\text{gps}}, 1.0, 6.0)$. As dead-reckoning drift accumulates during outages, $\sqrt{\text{drift\_factor}}$ scales the weight upward to a maximum clamp of $0.25$, allowing the filter to recover accumulated error without introducing sharp trajectory snaps.
+- **State blend:** Position states are blended directly:
+  $$x \leftarrow (1 - w_{\text{gps}}) x + w_{\text{gps}} x_{\text{gps}}, \quad y \leftarrow (1 - w_{\text{gps}}) y + w_{\text{gps}} y_{\text{gps}}$$
 
-- **Fusion approach.** How do you weight GPS vs wheel odometry? Does the weighting change over time or with signal quality?
-- **Heading.** Where does your heading (and its rate of change) come from? What did you assume about the path, and what would break your approach?
-- **Noise handling.** What did you detect, how, and what happens when you detect it? Which noise can't be detected, and how do you know it is affecting your estimate without correction?
-- **Monitoring output.** What thresholds did you choose for staleness warnings and why?
-- **Ambiguity.** What did the task leave underspecified, and what call did you make?
-- **Testing.** How did you verify it was actually working correctly, not just running? What did you check with `--visualize`?
-- **Stretch goals.** Which did you attempt, and how far did you get?
+### Heading
+- **Kinematic integration:** Heading is integrated at 50 Hz in `wheel_tick_callback` using circular arc kinematics:
+  $$\Delta\theta = \frac{\Delta s}{R}, \quad R = 9.8\text{ m}$$
+  Angles are normalized to $[-\pi, \pi]$ using modulo arithmetic.
+- **Gated GPS heading trim:** In `gps_callback`, when GPS covariance is low ($< 0.15\text{ m}^2$) and consecutive displacement exceeds $0.3\text{ m}$, the displacement vector angle is calculated via $\text{atan2}(\Delta y, \Delta x)$. The heading error is wrapped to $[-\pi, \pi]$ and blended into the current heading with a gentle gain of $0.02$, eliminating long-run angular drift without injecting GPS positional jitter.
+- **Assumptions and breaking conditions:** Assumes counter-clockwise motion along a circular path of known nominal radius ($9.8\text{ m}$). Straight lines, clockwise loops, reverse maneuvers, or non-circular paths would break this kinematic assumption. A general-purpose rover would instead derive yaw rate from differential wheel velocity kinematics or an onboard IMU gyroscope.
+
+### Noise handling
+- **Detected and handled faults:**
+  - *Duplicate packets:* Packets where $\Delta t \le 1\times 10^{-5}\text{ s}$ are dropped immediately, preventing division-by-zero, velocity spikes, and `NaN
 
 ---
 
