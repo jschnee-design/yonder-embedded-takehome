@@ -119,7 +119,7 @@ class OdometryNode(Node):
         # ------------------------------------------------------------------
         # TODO: Create a timer that calls self.monitoring_callback once per second.
         #
-        # self.monitor_timer = self.create_timer(1.0, self.monitoring_callback)
+        self.monitor_timer = self.create_timer(1.0, self.monitoring_callback)
 
         # ------------------------------------------------------------------
         # State  — add whatever you need
@@ -142,6 +142,9 @@ class OdometryNode(Node):
         
         self.wheel_msg_count: int = 0
         self.start_time: float = time.monotonic()   # use time.monotonic() to measure durations
+
+        self.ticks_since_last_report: int = 0
+        self.last_report_monotonic: float = time.monotonic()
 
     # -----------------------------------------------------------------------
     # Wheel encoder callback
@@ -183,6 +186,7 @@ class OdometryNode(Node):
 
         self.last_wheel_time = time.monotonic()
         self.wheel_msg_count += 1
+        self.ticks_since_last_report += 1
         #print(f"[wheel_ticks] count={msg.tick_count} stamp={msg.timestamp:.3f}")
 
         # 1. Handle first message (initialise last_tick_count / last_tick_time)
@@ -266,14 +270,14 @@ class OdometryNode(Node):
             if disp > 0.3:
                 gps_heading = math.atan2(dy, dx)
                 diff = (gps_heading - self.heading + math.pi) % (2.0 * math.pi) - math.pi
-                self.heading = (self.heading + 0.03 * diff + math.pi) % (2.0 * math.pi) - math.pi
+                self.heading = (self.heading + 0.02 * diff + math.pi) % (2.0 * math.pi) - math.pi
 
         self.prev_gps_x = msg.x
         self.prev_gps_y = msg.y
 
         # 1. Compute a weight w_gps based on msg.covariance (lower cov = higher trust).
         # cov ~ 0.09 -> w ~ 0.12
-        w_gps = min(max(0.012 / msg.covariance, 0.02), 0.15)
+        w_gps = min(max(0.012 / msg.covariance, 0.03), 0.15)
 
         # 2. Blend: self.x = (1 - w_gps) * self.x + w_gps * msg.x
         #           self.y = (1 - w_gps) * self.y + w_gps * msg.y
@@ -352,8 +356,28 @@ class OdometryNode(Node):
         Example format (feel free to change the layout):
             [odom] pos=(1.23, 0.45)m  enc=0.02s ago @49.8Hz  gps=0.91s ago
         """
-        # TODO: implement
-        pass
+        now = time.monotonic()
+
+        # Time elapsed since the last incoming message from each sensor
+        dt_wheel = (now - self.last_wheel_time) if self.last_wheel_time is not None else float("nan")
+        dt_gps = (now - self.last_gps_arrival) if self.last_gps_arrival is not None else float("nan")
+
+        # Measured wheel message frequency over the last 1.0 second
+        elapsed = now - self.last_report_monotonic
+        measured_hz = (self.ticks_since_last_report / elapsed) if elapsed > 0 else 0.0
+
+        # Reset counters for the next window
+        self.ticks_since_last_report = 0
+        self.last_report_monotonic = now
+
+        # Add outage flag if GPS drops out (> 3.0s)
+        gps_status = f"{dt_gps:4.2f}s ago" if dt_gps < 3.0 else f"{dt_gps:4.2f}s ago [OUTAGE]"
+
+        print(
+            f"[odom] pos=({self.x:5.2f}, {self.y:5.2f})m | "
+            f"enc={dt_wheel:5.3f}s ago @ {measured_hz:4.1f}Hz (exp ~50Hz) | "
+            f"gps={gps_status}"
+        )
 
 
 # ---------------------------------------------------------------------------
